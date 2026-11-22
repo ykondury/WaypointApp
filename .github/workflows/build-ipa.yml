@@ -48,6 +48,7 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
           rustup target add aarch64-apple-ios
+          rustup component add llvm-tools-preview
           rustc --version
 
       - name: Fetch location-enabled idevice binary

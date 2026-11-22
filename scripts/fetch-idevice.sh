@@ -41,7 +41,9 @@ cargo test \
   | tee "$test_log"
 grep -Fq 'test result: ok. 1 passed;' "$test_log"
 
-cargo build \
+# Disable embedded LLVM bitcode for project dependencies (no LTO is used),
+# avoiding another possible incompatibility with Apple's older LLVM at link time.
+RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-C embed-bitcode=no" cargo build \
   --manifest-path "$source_dir/ffi/Cargo.toml" \
   --locked \
   --release \
@@ -56,7 +58,16 @@ if [[ ! -s "$header" || ! -s "$library" ]]; then
   exit 1
 fi
 
-nm -g "$library" > "$source_dir/symbols.txt"
+# Xcode's Apple nm (LLVM 17) cannot read LLVM 23 bitcode in Rust 1.100
+# static archives. Use llvm-nm shipped with this rustc toolchain instead.
+rustup component add llvm-tools-preview
+host_triple="$(rustc -vV | sed -n 's/^host: //p')"
+llvm_nm="$(rustc --print sysroot)/lib/rustlib/${host_triple}/bin/llvm-nm"
+if [[ ! -x "$llvm_nm" ]]; then
+  echo "Matching Rust llvm-nm not found at: $llvm_nm" >&2
+  exit 1
+fi
+"$llvm_nm" --defined-only -g "$library" > "$source_dir/symbols.txt"
 for symbol in location_simulation_set remote_server_connect_rsd image_mounter_connect_rsd tunnel_create_rppairing; do
   if ! grep -q "_$symbol" "$source_dir/symbols.txt"; then
     echo "The patched FFI archive is missing required symbol: $symbol" >&2
