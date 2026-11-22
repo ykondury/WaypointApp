@@ -12,7 +12,7 @@ final class DiagnosticsLog: @unchecked Sendable {
     private static let maxFileBytes = 512 * 1024
     private static let maxMemoryEntries = 2_000
 
-    private let logger = Logger(subsystem: Self.subsystem, category: "diagnostics")
+    private let logger = Logger(subsystem: DiagnosticsLog.subsystem, category: "diagnostics")
     private let lock = NSLock()
     private let fileQueue = DispatchQueue(label: "app.waypoint.diagnostics", qos: .utility)
     private let formatter: ISO8601DateFormatter
