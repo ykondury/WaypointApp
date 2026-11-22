@@ -59,21 +59,52 @@ final class CellularPathMonitor: ObservableObject, @unchecked Sendable {
         return Date().timeIntervalSince(offlineSince) >= duration
     }
 
+    /// Compact snapshot for handoff diagnostics. Safe to read from any queue.
+    var diagnosticSummary: String {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let cellularOnly = cellularOnlySince.map {
+            String(format: "%.1f", Date().timeIntervalSince($0))
+        } ?? "-"
+        let offline = offlineSince.map {
+            String(format: "%.1f", Date().timeIntervalSince($0))
+        } ?? "-"
+        return "active=\(Self.name(currentConnectionLocked())) cellular=\(cellularIsSatisfied) wifi=\(wifiIsSatisfied) cellular_only_s=\(cellularOnly) offline_s=\(offline)"
+    }
+
     private init() {
         cellularMonitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
-            self.update(cellular: path.status == .satisfied)
+            self.update(
+                cellular: path.status == .satisfied,
+                path: path,
+                source: "cellular"
+            )
         }
         wifiMonitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
-            self.update(wifi: path.status == .satisfied)
+            self.update(
+                wifi: path.status == .satisfied,
+                path: path,
+                source: "wifi"
+            )
         }
         cellularMonitor.start(queue: cellularQueue)
         wifiMonitor.start(queue: wifiQueue)
     }
 
-    private func update(cellular: Bool? = nil, wifi: Bool? = nil) {
+    private func update(
+        cellular: Bool? = nil,
+        wifi: Bool? = nil,
+        path: NWPath? = nil,
+        source: String
+    ) {
         lock.lock()
+
+        let previousActive = currentConnectionLocked()
+        let previousCellular = cellularIsSatisfied
+        let previousWiFi = wifiIsSatisfied
 
         if let cellular {
             hasCellularSample = true
@@ -106,7 +137,30 @@ final class CellularPathMonitor: ObservableObject, @unchecked Sendable {
             offlineSince = nil
         }
 
+        let active = currentConnectionLocked()
+        let cellularOnly = cellularOnlySince.map {
+            String(format: "%.1f", Date().timeIntervalSince($0))
+        } ?? "-"
+        let offline = offlineSince.map {
+            String(format: "%.1f", Date().timeIntervalSince($0))
+        } ?? "-"
+        let changed = active != previousActive ||
+            cellularIsSatisfied != previousCellular ||
+            wifiIsSatisfied != previousWiFi
+        let cellularNow = cellularIsSatisfied
+        let wifiNow = wifiIsSatisfied
         lock.unlock()
+
+        if changed {
+            var metadata = pathMetadata(path)
+            metadata["source"] = source
+            metadata["active"] = Self.name(active)
+            metadata["cellular"] = String(cellularNow)
+            metadata["wifi"] = String(wifiNow)
+            metadata["cellular_only_s"] = cellularOnly
+            metadata["offline_s"] = offline
+            DiagnosticsLog.shared.record("path", "transition", metadata: metadata)
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -120,10 +174,33 @@ final class CellularPathMonitor: ObservableObject, @unchecked Sendable {
     private func currentConnection() -> PhysicalConnectionKind {
         lock.lock()
         defer { lock.unlock() }
+        return currentConnectionLocked()
+    }
 
+    private func currentConnectionLocked() -> PhysicalConnectionKind {
         guard hasCellularSample, hasWiFiSample else { return .unknown }
         if wifiIsSatisfied { return .wifi }
         if cellularIsSatisfied { return .cellular }
         return .offline
+    }
+
+    private func pathMetadata(_ path: NWPath?) -> [String: String] {
+        guard let path else { return [:] }
+        return [
+            "path_status": path.status == .satisfied ? "satisfied" : "unsatisfied",
+            "interfaces": path.availableInterfaces.map { "\($0.type)" }.joined(separator: ","),
+            "expensive": String(path.isExpensive),
+            "constrained": String(path.isConstrained),
+            "dns": String(path.supportsDNS)
+        ]
+    }
+
+    private static func name(_ kind: PhysicalConnectionKind) -> String {
+        switch kind {
+        case .unknown: return "unknown"
+        case .offline: return "offline"
+        case .cellular: return "cellular"
+        case .wifi: return "wifi"
+        }
     }
 }

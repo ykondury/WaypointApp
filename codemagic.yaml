@@ -32,7 +32,22 @@ workflows:
           xcodegen --version
           xcodebuild -version
 
-      - name: Fetch pinned idevice library
+      - name: Install Rust iOS target
+        script: |
+          set -euo pipefail
+
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+          fi
+
+          source "$HOME/.cargo/env"
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-ios
+          rustc --version
+
+      - name: Build patched idevice library
         script: |
           set -euo pipefail
           bash scripts/fetch-idevice.sh

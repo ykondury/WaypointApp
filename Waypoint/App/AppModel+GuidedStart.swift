@@ -11,6 +11,14 @@ extension AppModel {
         didLeaveForLocalDevVPN = false
         cellularLaunchTask?.cancel()
         cellularLaunchState = .settlingLocalDevVPN
+        DiagnosticsLog.shared.record(
+            "guided",
+            "localdevvpn returned",
+            metadata: [
+                "operation": operationID.uuidString,
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
         cellularLaunchTask = Task { [weak self] in
             guard let self else { return }
 
@@ -50,6 +58,14 @@ extension AppModel {
 
         do {
             cellularLaunchState = .preparingDevice
+            DiagnosticsLog.shared.record(
+                "guided",
+                "wifi launch preparing device",
+                metadata: [
+                    "operation": operationID.uuidString,
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
             try await prepareDeviceCore()
             try Task.checkCancellation()
 
@@ -69,11 +85,29 @@ extension AppModel {
             beginResendLoop(for: sessionID)
             cellularLaunchTask = nil
             cellularLaunchState = .succeeded
+            DiagnosticsLog.shared.record(
+                "guided",
+                "wifi launch succeeded",
+                metadata: [
+                    "operation": operationID.uuidString,
+                    "session": sessionID.uuidString,
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
         } catch is CancellationError {
             return
         } catch {
             guard !Task.isCancelled,
                   cellularLaunchOperationID == operationID else { return }
+            DiagnosticsLog.shared.record(
+                "guided",
+                "wifi launch failed",
+                metadata: [
+                    "operation": operationID.uuidString,
+                    "error": error.localizedDescription,
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
             if case .preparingDevice = cellularLaunchState {
                 await recordPreparationFailure(error)
             } else {
@@ -89,6 +123,14 @@ extension AppModel {
 
     private func waitForOfflineAndStart(operationID: UUID) async {
         cellularLaunchState = .waitingForAirplaneMode
+        DiagnosticsLog.shared.record(
+            "guided",
+            "waiting for airplane mode",
+            metadata: [
+                "operation": operationID.uuidString,
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
 
         while cellularLaunchOperationID == operationID {
             if isApplicationActive,
@@ -109,6 +151,15 @@ extension AppModel {
             return
         }
 
+        DiagnosticsLog.shared.record(
+            "guided",
+            "offline confirmed; starting spoof",
+            metadata: [
+                "operation": operationID.uuidString,
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
+
         do {
             cellularLaunchState = .preparingDevice
             try await prepareDeviceCore()
@@ -125,6 +176,14 @@ extension AppModel {
                 return
             }
 
+            DiagnosticsLog.shared.record(
+                "guided",
+                "arming handoff after offline spoof start",
+                metadata: [
+                    "operation": operationID.uuidString,
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
             cellularLaunchState = .handoff
             cellularLaunchTask = nil
             armCellularHandoff()
@@ -133,6 +192,15 @@ extension AppModel {
         } catch {
             guard !Task.isCancelled,
                   cellularLaunchOperationID == operationID else { return }
+            DiagnosticsLog.shared.record(
+                "guided",
+                "offline launch failed",
+                metadata: [
+                    "operation": operationID.uuidString,
+                    "error": error.localizedDescription,
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
             if case .preparingDevice = cellularLaunchState {
                 await recordPreparationFailure(error)
             } else {
@@ -175,6 +243,15 @@ extension AppModel {
         simulatedCoordinate = coordinate
         UIApplication.shared.isIdleTimerDisabled = true
         SimulationNotificationMonitor.shared.beginSession(sessionID)
+        DiagnosticsLog.shared.record(
+            "guided",
+            "spoof established",
+            metadata: [
+                "operation": operationID.uuidString,
+                "session": sessionID.uuidString,
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
         publishSimulationEvent(.started, coordinate: coordinate)
     }
 
@@ -182,7 +259,13 @@ extension AppModel {
         guard backgroundKeepAliveEnabled else { return }
         do {
             try BackgroundKeepAlive.shared.start()
+            DiagnosticsLog.shared.record("keepalive", "started")
         } catch {
+            DiagnosticsLog.shared.record(
+                "keepalive",
+                "start failed",
+                metadata: ["error": error.localizedDescription]
+            )
             presentError(
                 title: "Background Keepalive Unavailable",
                 message: "The spoof is active, but background reliability may be reduced.\n\n\(error.localizedDescription)"

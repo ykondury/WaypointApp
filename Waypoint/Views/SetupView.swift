@@ -7,6 +7,7 @@ struct SetupView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var isChoosingPairingFile = false
     @State private var isSideStoreConfirmationPresented = false
+    @State private var diagnosticsCopied = false
 
     private let localDevVPNAppStoreURL = URL(string: "https://apps.apple.com/app/id6755608044")!
 
@@ -106,6 +107,35 @@ struct SetupView: View {
                 Text("Background")
             } footer: {
                 Text("Helps maintain the spoof when you switch apps. Uses more battery.")
+            }
+
+            Section {
+                Button {
+                    UIPasteboard.general.string = DiagnosticsLog.shared.exportText()
+                    diagnosticsCopied = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        diagnosticsCopied = false
+                    }
+                } label: {
+                    Label(
+                        diagnosticsCopied ? "Copied" : "Copy Diagnostics",
+                        systemImage: diagnosticsCopied ? "checkmark.circle.fill" : "doc.on.doc"
+                    )
+                }
+
+                ShareLink(item: DiagnosticsLog.shared.fileLocation) {
+                    Label("Share Diagnostics File", systemImage: "square.and.arrow.up")
+                }
+
+                Button("Clear Diagnostics", role: .destructive) {
+                    DiagnosticsLog.shared.clear()
+                    diagnosticsCopied = false
+                }
+            } header: {
+                Text("Cellular Diagnostics")
+            } footer: {
+                Text("\(DiagnosticsLog.shared.summary). Logs network transitions, bridge timing, probes, and FFI error codes. Pairing secrets are never recorded.")
             }
 
             Section {

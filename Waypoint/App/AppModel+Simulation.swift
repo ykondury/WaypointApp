@@ -9,6 +9,16 @@ extension AppModel {
             return
         }
 
+        DiagnosticsLog.shared.record(
+            "simulation",
+            "start requested",
+            metadata: [
+                "lat": String(format: "%.6f", coordinate.latitude),
+                "lon": String(format: "%.6f", coordinate.longitude),
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
+
         if !isReady {
             await prepareDevice()
         }
@@ -62,7 +72,23 @@ extension AppModel {
             }
             beginResendLoop(for: sessionID)
             publishSimulationEvent(previousCoordinate == nil ? .started : .moved, coordinate: coordinate)
+            DiagnosticsLog.shared.record(
+                "simulation",
+                "start succeeded",
+                metadata: [
+                    "session": sessionID.uuidString,
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
         } catch {
+            DiagnosticsLog.shared.record(
+                "simulation",
+                "start failed",
+                metadata: [
+                    "error": error.localizedDescription,
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
             if previousCoordinate != nil, let previousSessionID {
                 simulationConnectionFailed(
                     error,
@@ -82,6 +108,11 @@ extension AppModel {
         guard cellularLaunchOperationID == nil else { return }
         guard !isChangingSimulation else { return }
 
+        DiagnosticsLog.shared.record(
+            "simulation",
+            "stop requested",
+            metadata: ["path": CellularPathMonitor.shared.diagnosticSummary]
+        )
         cancelCellularHandoffWork(resetState: true)
         let sessionID = simulationSessionID
         isChangingSimulation = true
@@ -100,6 +131,11 @@ extension AppModel {
             try await bridge.clearLocation()
             didConfirmStop = true
         } catch {
+            DiagnosticsLog.shared.record(
+                "simulation",
+                "stop failed",
+                metadata: ["error": error.localizedDescription]
+            )
             invalidateConnectionReadiness()
             presentError(
                 title: "Could Not Confirm Real Location",
@@ -112,6 +148,7 @@ extension AppModel {
         UIApplication.shared.isIdleTimerDisabled = false
         if didConfirmStop {
             publishSimulationEvent(.stopped)
+            DiagnosticsLog.shared.record("simulation", "stop succeeded")
         }
         isStoppingSimulation = false
         isChangingSimulation = false
@@ -120,6 +157,14 @@ extension AppModel {
     func beginResendLoop(for sessionID: UUID) {
         guard !cellularHandoffState.pausesLocationWrites else { return }
         resendTask?.cancel()
+        DiagnosticsLog.shared.record(
+            "simulation",
+            "resend loop started",
+            metadata: [
+                "session": sessionID.uuidString,
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
         resendTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))
@@ -133,6 +178,14 @@ extension AppModel {
 
                 if case .succeeded = self.cellularHandoffState,
                    !CellularPathMonitor.shared.isCellularOnly() {
+                    DiagnosticsLog.shared.record(
+                        "simulation",
+                        "cellular path lost; pausing writes",
+                        metadata: [
+                            "session": sessionID.uuidString,
+                            "path": CellularPathMonitor.shared.diagnosticSummary
+                        ]
+                    )
                     self.cellularHandoffState = .failed(
                         "The phone is no longer on a cellular-only path. Location writes are paused so Waypoint does not make an unsafe cellular-only reconnect attempt."
                     )
@@ -151,6 +204,15 @@ extension AppModel {
                     SimulationNotificationMonitor.shared.recordHeartbeat(for: sessionID)
                 } catch {
                     guard !Task.isCancelled, self.simulationSessionID == sessionID else { return }
+                    DiagnosticsLog.shared.record(
+                        "simulation",
+                        "resend failed",
+                        metadata: [
+                            "session": sessionID.uuidString,
+                            "error": error.localizedDescription,
+                            "path": CellularPathMonitor.shared.diagnosticSummary
+                        ]
+                    )
                     self.simulationConnectionFailed(error, notificationSessionID: sessionID)
                     return
                 }
@@ -166,6 +228,21 @@ extension AppModel {
     ) {
         if requireCurrentSession, simulationSessionID != notificationSessionID { return }
         guard !isStoppingSimulation, simulatedCoordinate != nil else { return }
+
+        var failureMetadata = [
+            "session": notificationSessionID.uuidString,
+            "during_handoff": String(duringCellularHandoff),
+            "error": error.localizedDescription,
+            "path": CellularPathMonitor.shared.diagnosticSummary
+        ]
+        if let bridgeError = error as? DeviceBridgeError {
+            failureMetadata["error_name"] = bridgeError.diagnosticName
+            if let code = bridgeError.diagnosticCode {
+                failureMetadata["ffi_code"] = String(code)
+                failureMetadata["timeout"] = String(code == DeviceBridgeError.nativeTimeoutCode)
+            }
+        }
+        DiagnosticsLog.shared.record("simulation", "connection failed", metadata: failureMetadata)
 
         resendTask?.cancel()
         resendTask = nil
@@ -185,11 +262,11 @@ extension AppModel {
             if cellularLaunchOperationID == nil {
                 presentError(
                     title: "Cellular Handoff Failed",
-                    message: "The retained developer session stopped responding during the handoff test, so the spoof may have stopped. A new session cannot be opened on cellular alone. Leave Wi-Fi off, reconnect LocalDevVPN while cellular is on, enable Airplane Mode again, then prepare and restart the spoof.\n\n\(error.localizedDescription)"
+                    message: "The retained developer session stopped responding during mobile-data verification, so Waypoint could not confirm that the spoof is still active. Return to Wi-Fi, reconnect LocalDevVPN, and restart the spoof before trying again.\n\n\(error.localizedDescription)"
                 )
             } else if case .handoff = cellularLaunchState {
                 cellularLaunchState = .failed(
-                    "The spoof connection ended when mobile data returned. Turn Airplane Mode on and try again.\n\n\(error.localizedDescription)"
+                    "Waypoint could not confirm the spoof after mobile data returned. Return to Wi-Fi and restart the cellular handoff.\n\n\(error.localizedDescription)"
                 )
             }
         } else {

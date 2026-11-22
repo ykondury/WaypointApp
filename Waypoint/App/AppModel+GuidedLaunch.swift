@@ -10,8 +10,21 @@ extension AppModel {
         case .cellular:
             route = .cellular
         case .unknown, .offline:
+            DiagnosticsLog.shared.record(
+                "guided",
+                "adaptive route unavailable",
+                metadata: ["path": CellularPathMonitor.shared.diagnosticSummary]
+            )
             return
         }
+        DiagnosticsLog.shared.record(
+            "guided",
+            "adaptive route selected",
+            metadata: [
+                "route": route == .wifi ? "wifi" : "cellular",
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
         beginGuidedLaunch(at: coordinate, route: route)
     }
 
@@ -45,6 +58,17 @@ extension AppModel {
         cellularLaunchOperationID = operationID
         pendingCellularCoordinate = coordinate
         pendingLaunchRoute = route
+        DiagnosticsLog.shared.record(
+            "guided",
+            "launch started",
+            metadata: [
+                "operation": operationID.uuidString,
+                "route": route == .wifi ? "wifi" : "cellular",
+                "lat": String(format: "%.6f", coordinate.latitude),
+                "lon": String(format: "%.6f", coordinate.longitude),
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
         if !isLocalDevVPNInstalled {
             cellularLaunchState = .needsLocalDevVPN
         } else {
@@ -65,6 +89,14 @@ extension AppModel {
     func cancelCellularLaunch() {
         guard canCancelCellularLaunch else { return }
         let operationID = cellularLaunchOperationID
+        DiagnosticsLog.shared.record(
+            "guided",
+            "launch cancel requested",
+            metadata: [
+                "operation": operationID?.uuidString ?? "-",
+                "state": String(describing: cellularLaunchState)
+            ]
+        )
         let needsBridgeCleanup: Bool
         if case .preparingDevice = cellularLaunchState {
             needsBridgeCleanup = true
@@ -107,6 +139,15 @@ extension AppModel {
             return
         }
 
+        DiagnosticsLog.shared.record(
+            "guided",
+            "launch retry requested",
+            metadata: [
+                "operation": operationID.uuidString,
+                "has_session": String(simulationSessionID != nil),
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
         if simulatedCoordinate != nil, simulationSessionID != nil {
             waitForOfflineThenRetryHandoff(operationID: operationID)
         } else if PairingFileStore.exists {
@@ -160,6 +201,15 @@ extension AppModel {
             cellularLaunchState = .needsLocalDevVPN
             return
         }
+        DiagnosticsLog.shared.record(
+            "guided",
+            "preflight started",
+            metadata: [
+                "operation": operationID.uuidString,
+                "route": pendingLaunchRoute == .wifi ? "wifi" : "cellular",
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
         cancelCellularHandoffWork(resetState: simulatedCoordinate == nil)
         cellularLaunchState = .cachingSupportFiles("Checking one-time files…")
 
@@ -184,6 +234,15 @@ extension AppModel {
 
                 guard cellularLaunchOperationID == operationID else { return }
                 cellularLaunchTask = nil
+                DiagnosticsLog.shared.record(
+                    "guided",
+                    "localdevvpn open result",
+                    metadata: [
+                        "operation": operationID.uuidString,
+                        "opened": String(didOpen),
+                        "path": CellularPathMonitor.shared.diagnosticSummary
+                    ]
+                )
                 if !didOpen {
                     if isLocalDevVPNInstalled {
                         failCellularLaunch(
@@ -226,6 +285,14 @@ extension AppModel {
     private func waitForOfflineThenRetryHandoff(operationID: UUID) {
         cellularLaunchTask?.cancel()
         cellularLaunchState = .waitingForAirplaneMode
+        DiagnosticsLog.shared.record(
+            "guided",
+            "retry waiting for airplane mode",
+            metadata: [
+                "operation": operationID.uuidString,
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
         cellularLaunchTask = Task { [weak self] in
             guard let self else { return }
 
@@ -249,6 +316,14 @@ extension AppModel {
                 return
             }
 
+            DiagnosticsLog.shared.record(
+                "guided",
+                "retry offline confirmed; arming handoff",
+                metadata: [
+                    "operation": operationID.uuidString,
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
             cellularLaunchState = .handoff
             cellularLaunchTask = nil
             armCellularHandoff()

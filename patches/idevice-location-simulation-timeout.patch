@@ -1,0 +1,84 @@
+diff --git a/ffi/Cargo.toml b/ffi/Cargo.toml
+index 91bd981..933e743 100644
+--- a/ffi/Cargo.toml
++++ b/ffi/Cargo.toml
+@@ -71,7 +71,7 @@ tunnel_tcp_stack = ["idevice/tunnel_tcp_stack"]
+ tunnel_tcp_stack_pcap = ["idevice/tunnel_tcp_stack_pcap"]
+ tss = ["idevice/tss"]
+ tunneld = ["idevice/tunneld"]
+-usbmuxd = ["idevice/usbmuxd"]
++usbmuxd = ["idevice/usbmuxd", "dep:futures"]
+ wda = ["idevice/wda", "dep:serde_json"]
+ xpc = ["idevice/xpc"]
+ screenshotr = ["idevice/screenshotr"]
+diff --git a/ffi/src/dvt/location_simulation.rs b/ffi/src/dvt/location_simulation.rs
+index 5f8579e..408a5ab 100644
+--- a/ffi/src/dvt/location_simulation.rs
++++ b/ffi/src/dvt/location_simulation.rs
+@@ -1,11 +1,25 @@
+ // Jackson Coxson
+ 
+-use std::ptr::null_mut;
++use std::{future::Future, ptr::null_mut, time::Duration};
+ 
+ use idevice::{ReadWrite, dvt::location_simulation::LocationSimulationClient};
+ 
+ use crate::{IdeviceFfiError, dvt::remote_server::RemoteServerHandle, ffi_err, run_sync};
+ 
++const LOCATION_SIMULATION_SET_TIMEOUT: Duration = Duration::from_secs(8);
++
++async fn with_location_simulation_timeout<F>(
++    timeout: Duration,
++    operation: F,
++) -> Result<(), idevice::IdeviceError>
++where
++    F: Future<Output = Result<(), idevice::IdeviceError>>,
++{
++    tokio::time::timeout(timeout, operation)
++        .await
++        .unwrap_or(Err(idevice::IdeviceError::Timeout))
++}
++
+ /// Opaque handle to a ProcessControlClient
+ pub struct LocationSimulationHandle<'a>(pub LocationSimulationClient<'a, Box<dyn ReadWrite>>);
+ 
+@@ -107,10 +121,38 @@ pub unsafe extern "C" fn location_simulation_set(
+     }
+ 
+     let client = unsafe { &mut (*handle).0 };
+-    let res = run_sync(async move { client.set(latitude, longitude).await });
++    let res = run_sync(async move {
++        with_location_simulation_timeout(
++            LOCATION_SIMULATION_SET_TIMEOUT,
++            client.set(latitude, longitude),
++        )
++        .await
++    });
+ 
+     match res {
+         Ok(_) => null_mut(),
+         Err(e) => ffi_err!(e),
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn location_simulation_set_times_out_without_blocking_the_ffi_runtime() {
++        let started = std::time::Instant::now();
++        let result = run_sync(with_location_simulation_timeout(
++            Duration::from_millis(10),
++            std::future::pending(),
++        ));
++        let elapsed = started.elapsed();
++
++        assert!(matches!(result, Err(idevice::IdeviceError::Timeout)));
++        assert!(elapsed < Duration::from_secs(5), "timeout took {elapsed:?}");
++
++        // A timed-out location write must not wedge the shared runtime used by
++        // every other FFI call.
++        assert_eq!(run_sync(async { 7u8 }), 7);
++    }
++}

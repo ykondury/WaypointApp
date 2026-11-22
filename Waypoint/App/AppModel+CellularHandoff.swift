@@ -10,8 +10,30 @@ extension AppModel {
               !cellularHandoffState.isInProgress,
               let coordinate = simulatedCoordinate,
               let sessionID = simulationSessionID else {
+            DiagnosticsLog.shared.record(
+                "handoff",
+                "arm ignored",
+                metadata: [
+                    "changing": String(isChangingSimulation),
+                    "in_progress": String(cellularHandoffState.isInProgress),
+                    "has_coordinate": String(simulatedCoordinate != nil),
+                    "has_session": String(simulationSessionID != nil)
+                ]
+            )
             return
         }
+
+        let operationStarted = Date()
+        DiagnosticsLog.shared.record(
+            "handoff",
+            "armed",
+            metadata: [
+                "session": sessionID.uuidString,
+                "lat": String(format: "%.6f", coordinate.latitude),
+                "lon": String(format: "%.6f", coordinate.longitude),
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
 
         cellularHandoffTask?.cancel()
         resendTask?.cancel()
@@ -28,14 +50,33 @@ extension AppModel {
 
             // A cancelled resend may already be inside the serial bridge queue.
             // Fence it before the user changes network state.
+            let fenceStarted = Date()
             await bridge.waitUntilIdle()
+            DiagnosticsLog.shared.record(
+                "handoff",
+                "bridge fence complete",
+                metadata: [
+                    "session": sessionID.uuidString,
+                    "fence_ms": DiagnosticsLog.elapsedMilliseconds(since: fenceStarted),
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
             guard !Task.isCancelled,
                   cellularHandoffOperationID == operationID,
                   simulationSessionID == sessionID else {
                 return
             }
 
+            let baselineStarted = Date()
             let baselineDeadline = Date().addingTimeInterval(8)
+            DiagnosticsLog.shared.record(
+                "handoff",
+                "offline baseline wait started",
+                metadata: [
+                    "session": sessionID.uuidString,
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
             while !CellularPathMonitor.shared.isOffline(stableFor: 1),
                   Date() < baselineDeadline {
                 do {
@@ -60,9 +101,29 @@ extension AppModel {
                 return
             }
 
+            DiagnosticsLog.shared.record(
+                "handoff",
+                "offline baseline confirmed",
+                metadata: [
+                    "session": sessionID.uuidString,
+                    "elapsed_ms": DiagnosticsLog.elapsedMilliseconds(since: baselineStarted),
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
+
+            let pathStarted = Date()
             let pathDeadline = Date().addingTimeInterval(30)
             var lastDisplayedSecond: Int?
             var lastHeartbeatDate = Date()
+            var lastPathLogDate = Date()
+            DiagnosticsLog.shared.record(
+                "handoff",
+                "cellular-only wait started",
+                metadata: [
+                    "session": sessionID.uuidString,
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
 
             while !CellularPathMonitor.shared.isCellularOnly(stableFor: 2),
                   Date() < pathDeadline {
@@ -75,6 +136,19 @@ extension AppModel {
                 if Date().timeIntervalSince(lastHeartbeatDate) >= 10 {
                     SimulationNotificationMonitor.shared.recordHeartbeat(for: sessionID)
                     lastHeartbeatDate = Date()
+                }
+
+                if Date().timeIntervalSince(lastPathLogDate) >= 5 {
+                    DiagnosticsLog.shared.record(
+                        "handoff",
+                        "cellular-only wait tick",
+                        metadata: [
+                            "session": sessionID.uuidString,
+                            "remaining_s": String(remaining),
+                            "path": CellularPathMonitor.shared.diagnosticSummary
+                        ]
+                    )
+                    lastPathLogDate = Date()
                 }
 
                 do {
@@ -99,6 +173,16 @@ extension AppModel {
                 return
             }
 
+            DiagnosticsLog.shared.record(
+                "handoff",
+                "cellular-only path confirmed",
+                metadata: [
+                    "session": sessionID.uuidString,
+                    "elapsed_ms": DiagnosticsLog.elapsedMilliseconds(since: pathStarted),
+                    "path": CellularPathMonitor.shared.diagnosticSummary
+                ]
+            )
+
             cellularHandoffState = .verifying
             SimulationNotificationMonitor.shared.recordHeartbeat(for: sessionID)
 
@@ -116,7 +200,27 @@ extension AppModel {
                         return
                     }
 
+                    let probeStarted = Date()
+                    DiagnosticsLog.shared.record(
+                        "handoff",
+                        "probe started",
+                        metadata: [
+                            "session": sessionID.uuidString,
+                            "probe": "\(probe)/3",
+                            "path": CellularPathMonitor.shared.diagnosticSummary
+                        ]
+                    )
                     try await bridge.setLocation(coordinate)
+                    DiagnosticsLog.shared.record(
+                        "handoff",
+                        "probe succeeded",
+                        metadata: [
+                            "session": sessionID.uuidString,
+                            "probe": "\(probe)/3",
+                            "elapsed_ms": DiagnosticsLog.elapsedMilliseconds(since: probeStarted),
+                            "path": CellularPathMonitor.shared.diagnosticSummary
+                        ]
+                    )
                     SimulationNotificationMonitor.shared.recordHeartbeat(for: sessionID)
 
                     guard CellularPathMonitor.shared.isCellularOnly() else {
@@ -147,6 +251,15 @@ extension AppModel {
                     return
                 }
 
+                DiagnosticsLog.shared.record(
+                    "handoff",
+                    "handoff succeeded",
+                    metadata: [
+                        "session": sessionID.uuidString,
+                        "total_ms": DiagnosticsLog.elapsedMilliseconds(since: operationStarted),
+                        "path": CellularPathMonitor.shared.diagnosticSummary
+                    ]
+                )
                 SimulationNotificationMonitor.shared.recordHeartbeat(for: sessionID)
                 cellularHandoffState = .succeeded
                 cellularHandoffTask = nil
@@ -164,12 +277,18 @@ extension AppModel {
                     return
                 }
 
+                var metadata = handoffErrorMetadata(error)
+                metadata["session"] = sessionID.uuidString
+                metadata["total_ms"] = DiagnosticsLog.elapsedMilliseconds(since: operationStarted)
+                metadata["path"] = CellularPathMonitor.shared.diagnosticSummary
+                DiagnosticsLog.shared.record("handoff", "handoff failed", metadata: metadata)
+
                 cellularHandoffState = .failed(error.localizedDescription)
                 cellularHandoffTask = nil
                 cellularHandoffOperationID = nil
                 if case .handoff = cellularLaunchState {
                     cellularLaunchState = .failed(
-                        "The retained spoof session stopped responding when mobile data returned. Turn Airplane Mode on and try the guided start again."
+                        "Waypoint could not confirm the spoof after mobile data returned. Return to Wi-Fi and restart the cellular handoff.\n\n\(error.localizedDescription)"
                     )
                 }
                 simulationConnectionFailed(
@@ -181,67 +300,5 @@ extension AppModel {
         }
     }
 
-    func cancelCellularHandoff() {
-        guard cellularHandoffState.isInProgress else { return }
-        let sessionID = simulationSessionID
-
-        switch cellularHandoffState {
-        case .arming:
-            cancelCellularHandoffWork(resetState: true)
-            if let sessionID, simulatedCoordinate != nil {
-                beginResendLoop(for: sessionID)
-            }
-        case .waiting, .verifying:
-            cancelCellularHandoffWork(resetState: false)
-            cellularHandoffState = .failed(
-                "The handoff was cancelled after the network transition began. Location writes remain paused until you return to Airplane Mode or Wi-Fi and explicitly resume."
-            )
-            if let sessionID {
-                SimulationNotificationMonitor.shared.recordHeartbeat(for: sessionID)
-            }
-        case .idle, .succeeded, .failed:
-            return
-        }
-    }
-
-    func resumeSimulationAfterHandoffFailure() {
-        guard case .failed = cellularHandoffState,
-              let sessionID = simulationSessionID,
-              simulatedCoordinate != nil else {
-            return
-        }
-
-        cellularHandoffState = .idle
-        SimulationNotificationMonitor.shared.recordHeartbeat(for: sessionID)
-        beginResendLoop(for: sessionID)
-    }
-
-    private func cellularHandoffPathCheckFailed(
-        _ message: String,
-        operationID: UUID,
-        sessionID: UUID
-    ) {
-        guard cellularHandoffOperationID == operationID,
-              simulationSessionID == sessionID else {
-            return
-        }
-
-        cellularHandoffState = .failed(message)
-        cellularHandoffTask = nil
-        cellularHandoffOperationID = nil
-        SimulationNotificationMonitor.shared.recordHeartbeat(for: sessionID)
-        if case .handoff = cellularLaunchState {
-            cellularLaunchState = .failed(message)
-        }
-    }
-
-    func cancelCellularHandoffWork(resetState: Bool) {
-        cellularHandoffTask?.cancel()
-        cellularHandoffTask = nil
-        cellularHandoffOperationID = nil
-        if resetState {
-            cellularHandoffState = .idle
-        }
-    }
 }
 

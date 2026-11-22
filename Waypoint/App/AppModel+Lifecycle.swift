@@ -7,8 +7,18 @@ extension AppModel {
         refreshSideStoreAvailability()
         refreshDisconnectAlertSettings()
         pairingState = PairingFileStore.exists ? .ready : .required
+        DiagnosticsLog.shared.record(
+            "lifecycle",
+            "local state refreshed",
+            metadata: [
+                "pairing": String(PairingFileStore.exists),
+                "localdevvpn": String(isLocalDevVPNInstalled),
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
 
         if SimulationNotificationMonitor.shared.consumeStaleSessionMarker() {
+            DiagnosticsLog.shared.record("lifecycle", "stale simulation session marker consumed")
             publishSimulationEvent(.connectionLost)
             presentError(
                 title: "Previous Spoof Session Ended",
@@ -121,6 +131,15 @@ extension AppModel {
 
     func applicationBecameActive() {
         isApplicationActive = true
+        DiagnosticsLog.shared.record(
+            "lifecycle",
+            "application became active",
+            metadata: [
+                "launch_state": String(describing: cellularLaunchState),
+                "handoff_state": String(describing: cellularHandoffState),
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
         refreshLocalDevVPNAvailability()
         refreshSideStoreAvailability()
         refreshDisconnectAlertSettings()
@@ -142,8 +161,22 @@ extension AppModel {
                 try await bridge.setLocation(coordinate)
                 guard simulationSessionID == sessionID else { return }
                 SimulationNotificationMonitor.shared.recordHeartbeat(for: sessionID)
+                DiagnosticsLog.shared.record(
+                    "lifecycle",
+                    "foreground location refresh succeeded",
+                    metadata: ["session": sessionID.uuidString]
+                )
             } catch {
                 guard simulationSessionID == sessionID else { return }
+                DiagnosticsLog.shared.record(
+                    "lifecycle",
+                    "foreground location refresh failed",
+                    metadata: [
+                        "session": sessionID.uuidString,
+                        "error": error.localizedDescription,
+                        "path": CellularPathMonitor.shared.diagnosticSummary
+                    ]
+                )
                 simulationConnectionFailed(error, notificationSessionID: sessionID)
             }
         }
@@ -151,6 +184,15 @@ extension AppModel {
 
     func applicationBecameInactive() {
         isApplicationActive = false
+        DiagnosticsLog.shared.record(
+            "lifecycle",
+            "application became inactive",
+            metadata: [
+                "launch_state": String(describing: cellularLaunchState),
+                "handoff_state": String(describing: cellularHandoffState),
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
         if case .openingLocalDevVPN = cellularLaunchState {
             didLeaveForLocalDevVPN = true
         }

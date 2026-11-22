@@ -35,6 +35,18 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Install Rust iOS target
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+          fi
+          source "$HOME/.cargo/env"
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-ios
+          rustc --version
+
       - name: Fetch location-enabled idevice binary
         run: bash scripts/fetch-idevice.sh
 

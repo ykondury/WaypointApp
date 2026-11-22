@@ -68,6 +68,15 @@ final class AppModel: ObservableObject {
         hasStoredDisconnectAlertsPreference = storedDisconnectPreference != nil
         disconnectAlertsPreference = storedDisconnectPreference as? Bool ?? false
         SimulationNotificationMonitor.shared.setAlertsEnabled(false)
+
+        DiagnosticsLog.shared.record(
+            "lifecycle",
+            "app model initialized",
+            metadata: [
+                "keepalive_enabled": String(backgroundKeepAliveEnabled),
+                "path": CellularPathMonitor.shared.diagnosticSummary
+            ]
+        )
     }
 
     var notificationWarningsEnabled: Bool {
@@ -144,7 +153,7 @@ final class AppModel: ObservableObject {
     }
 }
 
-enum GuidedLaunchRoute {
+enum GuidedLaunchRoute: Equatable {
     case wifi
     case cellular
 }
