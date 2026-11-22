@@ -29,7 +29,7 @@ git -C "$source_dir" apply "$root_dir/patches/idevice-location-simulation-timeou
 # `provider`, `lockdown`, and the DVT RSD helpers are compiled
 # unconditionally, so the FFI crate also needs the `xpc`, `tcp`, and
 # `usbmuxd` features in addition to the services Waypoint uses.
-features="ring,core_device_proxy,dvt,location_simulation,mobile_image_mounter,remote_pairing,rsd,tunnel_tcp_stack,xpc,tcp,usbmuxd"
+features="ring,core_device_proxy,dvt,location_simulation,mobile_image_mounter,remote_pairing,rsd,tss,tunnel_tcp_stack,xpc,tcp,usbmuxd"
 test_log="$source_dir/timeout-test.log"
 cargo test \
   --manifest-path "$source_dir/ffi/Cargo.toml" \
@@ -43,6 +43,8 @@ grep -Fq 'test result: ok. 1 passed;' "$test_log"
 
 # Disable embedded LLVM bitcode for project dependencies (no LTO is used),
 # avoiding another possible incompatibility with Apple's older LLVM at link time.
+# Match the app minimum iOS version for C/assembly crypto dependencies.
+export IPHONEOS_DEPLOYMENT_TARGET="17.4"
 RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-C embed-bitcode=no" cargo build \
   --manifest-path "$source_dir/ffi/Cargo.toml" \
   --locked \
@@ -68,8 +70,8 @@ if [[ ! -x "$llvm_nm" ]]; then
   exit 1
 fi
 "$llvm_nm" --defined-only -g "$library" > "$source_dir/symbols.txt"
-for symbol in location_simulation_set remote_server_connect_rsd image_mounter_connect_rsd tunnel_create_rppairing; do
-  if ! grep -q "_$symbol" "$source_dir/symbols.txt"; then
+for symbol in location_simulation_set remote_server_connect_rsd image_mounter_connect_rsd image_mounter_mount_personalized_rsd tunnel_create_rppairing; do
+  if ! grep -Eq "[[:space:]]_$symbol$" "$source_dir/symbols.txt"; then
     echo "The patched FFI archive is missing required symbol: $symbol" >&2
     exit 1
   fi
